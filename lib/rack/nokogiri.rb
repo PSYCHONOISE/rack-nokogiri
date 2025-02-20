@@ -15,16 +15,16 @@ module Rack
 
     def call(env)
       status, headers, response = @app.call(env)
-      headers = HeaderHash.new(headers)
+      headers = Rack::Headers.new(headers)
 
       if should_process?(status, headers)
-        content = extract_content(response)
+        content = response.join
 
         doc = ::Nokogiri::HTML(content)
         process_nodes(doc)
         content = doc.to_html
 
-        headers['content-length'] = bytesize(content).to_s
+        headers['content-length'] = content.bytesize.to_s
         response = [content]
       end
 
@@ -36,10 +36,6 @@ module Rack
          !headers['transfer-encoding'] &&
           headers['content-type'] &&
           headers['content-type'].include?('text/html')
-    end
-
-    def extract_content(response)
-      response.reduce('') { |memo, part| memo + part }
     end
 
     def process_nodes(doc)
