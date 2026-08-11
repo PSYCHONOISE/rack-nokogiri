@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A new push to a branch makes the in-flight run for that branch obsolete.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: ${{ matrix.ruby }} / ${{ matrix.gemfile }}
+    runs-on: ubuntu-latest
+
+    # `ruby-head` is a canary: it should not gate a pull request.
+    continue-on-error: ${{ matrix.experimental == true }}
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # The middleware detects the Rack generation at load time, so every
+        # supported line gets exercised rather than just the newest one.
+        ruby: ['3.2', '3.3', '3.4', '4.0', 'jruby-9.4', 'truffleruby']
+        gemfile: [rack1, rack2, rack3]
+        include:
+          - ruby: 'ruby-head'
+            gemfile: rack3
+            experimental: true
+
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.gemfile }}.gemfile
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: ${{ matrix.ruby }}
+          bundler-cache: true
+
+      - run: bundle exec rake test
+
+  package:
+    name: package
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # `gem.files` is populated from `git ls-files`, so the build needs the
+      # full checkout rather than a shallow one.
+      - run: git fetch --prune --unshallow || true
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.4'
+          bundler-cache: true
+
+      - name: Build the gem
+        run: gem build rack-nokogiri.gemspec
+
+      - name: Install it in isolation and require it
+        run: |
+          gem install ./rack-nokogiri-*.gem
+          ruby -e "require 'rack/nokogiri'; puts Rack::Nokogiri::VERSION"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gem
+          path: ./rack-nokogiri-*.gem

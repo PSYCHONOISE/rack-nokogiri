@@ -1,0 +1,8 @@
+source 'https://rubygems.org'
+
+gemspec path: '..'
+
+# `rack-test` 2.x dropped Rack 1.x: it reaches for constants that only exist
+# from Rack 2 onwards and blows up on load. 1.1 is the last line that works.
+gem 'rack',      '~> 1.6'
+gem 'rack-test', '~> 1.1'
