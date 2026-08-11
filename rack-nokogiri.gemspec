@@ -26,10 +26,12 @@ Gem::Specification.new do |gem|
   # the encoding handling; JRuby 9.2+ reports a compatible RUBY_VERSION.
   gem.required_ruby_version = '>= 2.3.0'
 
+  # `source_code_uri` is left out on purpose: RubyGems warns when it repeats
+  # `homepage_uri`, and shows only the first of the two anyway.
   gem.metadata = {
     'homepage_uri'    => gem.homepage,
-    'source_code_uri' => gem.homepage,
-    'bug_tracker_uri' => "#{gem.homepage}/issues"
+    'bug_tracker_uri' => "#{gem.homepage}/issues",
+    'changelog_uri'   => "#{gem.homepage}/blob/master/CHANGELOG.md"
   }
 
   # Rack 1.x through 3.x are supported; the middleware detects the header

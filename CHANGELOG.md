@@ -69,9 +69,9 @@ RubyGems is upstream's August 2013 release and contains none of the following.
 
 ### Changed
 
-- `process_nodes` returns whether the block was called, which is what tells the
-  middleware if the document is worth re-serialising. It previously returned the
-  block's own return value.
+- `process_nodes` returns whether any rule's callable was invoked, which is what
+  tells the middleware if the document is worth re-serialising. It previously
+  returned the block's own return value.
 - `should_process?` takes two further optional arguments, the response body and
   the Rack env, used to detect streaming bodies and `HEAD` requests. Existing
   two-argument calls still work.

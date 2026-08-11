@@ -401,6 +401,35 @@ describe Rack::Nokogiri do
 
   end
 
+  describe 'with a malformed rule' do
+
+    # Unknown top-level options stay ignored -- that is long standing behaviour,
+    # covered above -- but a rule that cannot possibly fire is a typo, and
+    # silently dropping it left the middleware a no-op with nothing to show.
+    it 'fails when the callable is missing' do
+      error = _(proc {
+        create_app(200, {}, '', rules: [{ css: 'p.a', wtih: ->(n) { n } }])
+      }).must_raise ArgumentError
+      _(error.message).must_include ':with'
+    end
+
+    it 'fails when the rule is not a Hash' do
+      _(proc { create_app(200, {}, '', rules: ['p.a']) }).must_raise ArgumentError
+    end
+
+    it 'still accepts `call:` as an alias' do
+      app = create_app(
+        200,
+        { header_name('Content-Type') => 'text/html' },
+        '<p class="a">A</p>',
+        rules: [{ css: 'p.a', call: ->(nodes) { nodes.wrap('<div class="one"></div>') } }]
+      )
+      response = Rack::MockRequest.new(app).get('/')
+      _(response.body).must_have_css 'div.one p.a'
+    end
+
+  end
+
   describe 'with a custom `content_type`' do
 
     let(:status)  { 200 }

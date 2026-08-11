@@ -103,9 +103,8 @@ module Rack
     Rule = Struct.new(:css, :xpath, :callable)
 
     def initialize(app, opts = {}, &block)
-      @app   = app
-      @opts  = opts.reject { |key, _value| !SUPPORTED_OPTIONS.include?(key) }
-      @block = block
+      @app  = app
+      @opts = opts.reject { |key, _value| !SUPPORTED_OPTIONS.include?(key) }
 
       @rules         = build_rules(@opts, block)
       @content_types = Array(@opts.fetch(:content_type, DEFAULT_CONTENT_TYPE))
@@ -226,9 +225,20 @@ module Rack
       rules = []
       rules << Rule.new(Array(opts[:css]), Array(opts[:xpath]), block) if block
 
-      Array(opts[:rules]).each do |rule|
+      # A rule whose callable is missing -- `wtih:` for `with:`, say -- used to
+      # be dropped in silence, leaving the middleware a no-op with nothing to
+      # show for it. Unknown *top-level* options stay ignored, which is long
+      # standing documented behaviour; a malformed rule is a different thing.
+      Array(opts[:rules]).each_with_index do |rule, index|
+        unless rule.is_a?(Hash)
+          raise ArgumentError, "rules[#{index}] must be a Hash, got #{rule.class}"
+        end
+
         callable = rule[:with] || rule[:call]
-        next if callable.nil?
+        if callable.nil?
+          raise ArgumentError, "rules[#{index}] needs a :with (or :call) callable; " \
+                               "got keys #{rule.keys.inspect}"
+        end
 
         rules << Rule.new(Array(rule[:css]), Array(rule[:xpath]), callable)
       end
