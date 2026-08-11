@@ -112,6 +112,57 @@ use Rack::Nokogiri, css: 'p.target', fragment: true do |nodes|
 end
 ```
 
+### Options
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `css:` | — | A CSS selector, or an array of them. |
+| `xpath:` | — | An XPath selector, or an array of them. |
+| `rules:` | — | Further selector/callable pairs, each editing its own match. |
+| `fragment:` | `false` | Parse the body as a fragment rather than a document. |
+| `content_type:` | `'text/html'` | String, `Regexp`, or an array of either. |
+| `parse_options:` | — | Passed straight to Nokogiri. |
+| `max_size:` | — | Skip bodies larger than this many bytes. |
+
+Selectors accept arrays, and the block is applied to everything they match
+between them:
+
+```ruby
+use Rack::Nokogiri, css: ['p.target', 'div.target'] do |nodes|
+  nodes.wrap '<div class="wrapper"></div>'
+end
+```
+
+For edits that need different treatment per selector, pass `rules:` instead of
+a block. Each rule carries its own callable, and one parse serves them all:
+
+```ruby
+use Rack::Nokogiri, rules: [
+  { css: 'p.target',            with: ->(nodes) { nodes.wrap('<div></div>') } },
+  { xpath: "//p[@class='old']", with: ->(nodes) { nodes.remove } }
+]
+```
+
+`content_type:` widens what is eligible — by default only `text/html` is
+touched:
+
+```ruby
+use Rack::Nokogiri, css: 'p.target', content_type: %r{application/xhtml\+xml} do |nodes|
+  nodes.wrap '<div class="wrapper"></div>'
+end
+```
+
+`max_size:` declines bodies above a byte threshold, checking a declared
+`Content-Length` before the body is read at all. Nokogiri builds a DOM several
+times the size of its source, so this is the guard against one large response
+becoming a memory spike:
+
+```ruby
+use Rack::Nokogiri, css: 'p.target', max_size: 2 * 1024 * 1024 do |nodes|
+  nodes.wrap '<div class="wrapper"></div>'
+end
+```
+
 ### Adding Rack::Nokogiri to a Rackup application
 
 For a Rackup app we would do:
@@ -156,8 +207,9 @@ side effects:
 * the response carries a `Transfer-Encoding`;
 * the status admits no entity body;
 * the body is a Rack 3 streaming body, which buffering would defeat;
-* the `Content-Type` is not `text/html`;
-* no block was given.
+* the `Content-Type` does not match `content_type:`, which defaults to `text/html`;
+* the body is larger than `max_size:`;
+* no block and no `rules:` were given.
 
 Beyond that, responses are handled per the Rack version in play:
 

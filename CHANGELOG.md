@@ -42,8 +42,19 @@ RubyGems is upstream's August 2013 release and contains none of the following.
   differences are resolved once at load time into detector constants
   (`RACK_3_HEADERS`, `HEADERS_CLASS`, `NO_ENTITY_BODY_STATUSES`, `HTML_PARSER`,
   `JRUBY`) rather than by pinning a version.
-- A CI matrix over every supported Ruby x Rack pair, including `Rack::Lint`
-  conformance checks.
+- `css:` and `xpath:` accept an array of selectors as well as a single one.
+- `rules:`, taking selector/callable pairs, so several independent edits can
+  share one parse instead of one block receiving their merged `NodeSet`.
+- `content_type:`, a String, `Regexp`, or array of either, replacing the
+  hardcoded `text/html` test.
+- `parse_options:`, handed straight to Nokogiri.
+- `max_size:`, which declines bodies above a byte threshold. A declared
+  `Content-Length` is checked before the body is read at all. Nokogiri builds a
+  DOM several times the size of its source, so an unbounded body was an
+  unbounded allocation.
+- A CI matrix over every supported Ruby x Rack pair. The whole suite now runs
+  through `Rack::Lint`, which catches protocol violations as they happen rather
+  than waiting for an assertion written to look for them.
 
 ### Changed
 

@@ -79,12 +79,23 @@ module Rack
 
     CHARSET_PATTERN = /;\s*charset\s*=\s*"?([^";,\s]+)"?/i.freeze
 
-    SUPPORTED_OPTIONS = [:css, :xpath, :fragment].freeze
+    SUPPORTED_OPTIONS = [
+      :css, :xpath, :fragment, :rules, :content_type, :parse_options, :max_size
+    ].freeze
+
+    DEFAULT_CONTENT_TYPE = 'text/html'
+
+    # A selector set paired with the callable that edits what it matches.
+    Rule = Struct.new(:css, :xpath, :callable)
 
     def initialize(app, opts = {}, &block)
       @app   = app
       @opts  = opts.reject { |key, _value| !SUPPORTED_OPTIONS.include?(key) }
       @block = block
+
+      @rules         = build_rules(@opts, block)
+      @content_types = Array(@opts.fetch(:content_type, DEFAULT_CONTENT_TYPE))
+      @max_size      = @opts[:max_size]
     end
 
     def call(env)
@@ -95,6 +106,10 @@ module Rack
 
       encoding = charset_for(headers)
       original = read_body(body, encoding)
+
+      # A declared Content-Length is checked before the body is even read; this
+      # catches the responses that arrive without one.
+      return [status, headers, [original]] if oversized?(original.bytesize)
 
       doc = parse(original, encoding)
 
@@ -112,15 +127,16 @@ module Rack
     end
 
     def should_process?(status, headers, body = nil, env = nil)
-      return false if @block.nil?
+      return false if @rules.empty?
       return false if NO_ENTITY_BODY_STATUSES.key?(status.to_i)
       return false if head_request?(env)
       return false if streaming_body?(body)
       return false if fetch_header(headers, TRANSFER_ENCODING)
       return false if encoded_body?(headers)
+      return false if oversized?(declared_length(headers))
 
       content_type = fetch_header(headers, CONTENT_TYPE)
-      !content_type.nil? && content_type.include?('text/html')
+      !content_type.nil? && acceptable_content_type?(content_type)
     end
 
     # Kept for backwards compatibility: pre-3.x callers passed the raw body
@@ -129,29 +145,71 @@ module Rack
       read_body(body, nil)
     end
 
-    # Returns whether the block was called, which is what tells `call` if the
-    # document is worth re-serialising.
+    # Returns whether any rule's callable was invoked, which is what tells
+    # `call` if the document is worth re-serialising.
     def process_nodes(doc)
-      nodes = ::Nokogiri::XML::NodeSet.new(doc.document)
-      nodes += doc.css(@opts[:css])     unless @opts[:css].nil?
-      nodes += doc.xpath(@opts[:xpath]) unless @opts[:xpath].nil?
-      return false if nodes.empty?
+      @rules.reduce(false) do |edited, rule|
+        nodes = ::Nokogiri::XML::NodeSet.new(doc.document)
+        rule.css.each   { |selector| nodes += doc.css(selector) }
+        rule.xpath.each { |selector| nodes += doc.xpath(selector) }
+        next edited if nodes.empty?
 
-      @block.call(nodes)
-      true
+        rule.callable.call(nodes)
+        true
+      end
     end
 
     private
+
+    # The block plus `css:`/`xpath:` form one rule; `rules:` adds further
+    # selector/callable pairs, so several independent edits can share a pass.
+    def build_rules(opts, block)
+      rules = []
+      rules << Rule.new(Array(opts[:css]), Array(opts[:xpath]), block) if block
+
+      Array(opts[:rules]).each do |rule|
+        callable = rule[:with] || rule[:call]
+        next if callable.nil?
+
+        rules << Rule.new(Array(rule[:css]), Array(rule[:xpath]), callable)
+      end
+
+      rules
+    end
+
+    # `Regexp#match?` is 2.4; `=~` keeps the declared 2.3 floor honest.
+    def acceptable_content_type?(value)
+      @content_types.any? do |matcher|
+        matcher.is_a?(Regexp) ? !(matcher =~ value).nil? : value.include?(matcher.to_s)
+      end
+    end
+
+    # Nokogiri builds a DOM several times the size of the source, so a large
+    # response is worth declining rather than buffering into a tree.
+    def oversized?(size)
+      !@max_size.nil? && !size.nil? && size > @max_size
+    end
+
+    def declared_length(headers)
+      value = fetch_header(headers, CONTENT_LENGTH)
+      value.nil? ? nil : value.to_i
+    end
 
     # Parsing a bare fragment as a document wraps it in `<html><body>` and a
     # DOCTYPE, which corrupts the partials that AJAX and Turbo responses are
     # made of. Opt in with `fragment: true`.
     def parse(content, encoding)
-      if @opts[:fragment]
-        HTML_PARSER.fragment(content, parser_encoding(encoding))
-      else
-        HTML_PARSER.parse(content, nil, parser_encoding(encoding))
-      end
+      # The positional `nil` is the document URL, so the argument list cannot be
+      # compacted; the trailing options are appended only when they were given,
+      # which keeps the call within reach of older Nokogiri signatures.
+      args = if @opts[:fragment]
+               [content, parser_encoding(encoding)]
+             else
+               [content, nil, parser_encoding(encoding)]
+             end
+      args << @opts[:parse_options] unless @opts[:parse_options].nil?
+
+      @opts[:fragment] ? HTML_PARSER.fragment(*args) : HTML_PARSER.parse(*args)
     end
 
     # A HEAD response carries the headers of its GET counterpart but no body.
