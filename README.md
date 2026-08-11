@@ -174,6 +174,11 @@ limitation of the test harness, not of the middleware.
 ## Contributors
 
 * Daniel Perez Alvarez ([unindented@gmail.com](mailto:unindented@gmail.com)) — original author
+* PSYCHONOISE ([@PSYCHONOISE](https://github.com/PSYCHONOISE)) — fork maintainer
+
+The changes described under [About this fork](#about-this-fork) are the fork
+maintainer's; they are not endorsed by the original author, who marked the
+project abandoned before any of them were made.
 
 
 ## License

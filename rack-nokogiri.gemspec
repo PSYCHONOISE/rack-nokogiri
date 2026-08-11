@@ -7,8 +7,10 @@ require 'rack/nokogiri/version'
 Gem::Specification.new do |gem|
   gem.name          = 'rack-nokogiri'
   gem.version       = Rack::Nokogiri::VERSION
-  gem.authors       = ['Daniel Perez Alvarez']
-  gem.email         = ['unindented@gmail.com']
+  # Original author first, fork maintainer second; the arrays are positional.
+  gem.authors       = ['Daniel Perez Alvarez', 'PSYCHONOISE']
+  gem.email         = ['unindented@gmail.com',
+                       '9990726+PSYCHONOISE@users.noreply.github.com']
   gem.description   = %q{Rack Middleware for node manipulation.}
   gem.summary       = %q{Rack Middleware that allows you to manipulate the nodes in your response however you like.}
   # Fork of the archived unindented/rack-nokogiri; see the README for why.
