@@ -1,4 +1,6 @@
-module MiniTest::Assertions
+# frozen_string_literal: true
+
+module Minitest::Assertions
 
   def assert_has_css(html, css)
     assert ::Nokogiri::HTML(html).css(css).length > 0,
@@ -22,12 +24,23 @@ module MiniTest::Assertions
 
 end
 
-module MiniTest::Expectations
+# Minitest 6 moved `infect_an_assertion` onto `Minitest::Expectations`; in
+# Minitest 5 it is a private `Module` method used from inside the module body.
+INFECTIONS = [
+  [:assert_has_css,   :must_have_css],
+  [:refute_has_css,   :wont_have_css],
+  [:assert_has_xpath, :must_have_xpath],
+  [:refute_has_xpath, :wont_have_xpath]
+].freeze
 
-  infect_an_assertion :assert_has_css,   :must_have_css,   :reverse
-  infect_an_assertion :refute_has_css,   :wont_have_css,   :reverse
-
-  infect_an_assertion :assert_has_xpath, :must_have_xpath, :reverse
-  infect_an_assertion :refute_has_xpath, :wont_have_xpath, :reverse
-
+if Minitest::Expectations.respond_to?(:infect_an_assertion, true)
+  INFECTIONS.each do |assertion, expectation|
+    Minitest::Expectations.send(:infect_an_assertion, assertion, expectation, :reverse)
+  end
+else
+  module Minitest::Expectations
+    INFECTIONS.each do |assertion, expectation|
+      infect_an_assertion assertion, expectation, :reverse
+    end
+  end
 end
