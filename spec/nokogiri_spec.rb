@@ -115,6 +115,15 @@ describe Rack::Nokogiri do
 
   describe 'with a status that carries no entity body' do
 
+    # A 204 carrying a Content-Type and a body is not a legal Rack response, so
+    # this one bypasses Rack::Lint: what is under test is that the middleware
+    # declines to touch it, not that the fixture is well-formed.
+    let(:app) do
+      create_raw_app(status, headers, content, opts) do |nodes|
+        nodes.wrap('<div class="greeting"></div>')
+      end
+    end
+
     before { get '/' }
 
     let(:status)  { 204 }
@@ -342,6 +351,130 @@ describe Rack::Nokogiri do
     it 'leaves the compressed body intact' do
       round_tripped = Zlib::GzipReader.new(StringIO.new(last_response.body.b)).read
       _(round_tripped).must_include '<p class="hi">Hi!</p>'
+    end
+
+  end
+
+  describe 'with an array of selectors' do
+
+    let(:status)  { 200 }
+    let(:headers) { { header_name('Content-Type') => 'text/html' } }
+    let(:content) { '<html><body><p class="a">A</p><p class="b">B</p></body></html>' }
+    let(:opts)    { { css: ['p.a', 'p.b'] } }
+
+    before { get '/' }
+
+    it 'applies the block to everything they match' do
+      _(last_response.body.scan(/class="greeting"/).length).must_equal 2
+    end
+
+  end
+
+  describe 'with several rules' do
+
+    let(:app) do
+      inner = lambda do |_env|
+        [200,
+         { header_name('Content-Type') => 'text/html' },
+         ['<html><body><p class="a">A</p><p class="b">B</p></body></html>']]
+      end
+      middleware = Rack::Nokogiri.new(
+        inner,
+        rules: [
+          { css: 'p.a',   with: ->(nodes) { nodes.wrap('<div class="one"></div>') } },
+          { xpath: "//p[@class='b']", with: ->(nodes) { nodes.each { |n| n.content = 'edited' } } }
+        ]
+      )
+      Rack::Lint.new(middleware)
+    end
+
+    before { get '/' }
+
+    it 'runs each rule against its own selector' do
+      _(last_response.body).must_have_css 'div.one p.a'
+      _(last_response.body).must_include 'edited'
+    end
+
+    it 'leaves the other rule\'s nodes alone' do
+      _(last_response.body).wont_have_css 'div.one p.b'
+    end
+
+  end
+
+  describe 'with a custom `content_type`' do
+
+    let(:status)  { 200 }
+    let(:headers) { { header_name('Content-Type') => 'application/xhtml+xml' } }
+    let(:content) { '<html><body><p class="hi">Hi!</p></body></html>' }
+    let(:opts)    { { css: 'p.hi', content_type: %r{application/xhtml\+xml} } }
+
+    before { get '/' }
+
+    it 'processes a type it would otherwise skip' do
+      _(last_response.body).must_have_css '.greeting .hi'
+    end
+
+  end
+
+  describe 'with `max_size`' do
+
+    let(:status)  { 200 }
+    let(:headers) { { header_name('Content-Type') => 'text/html' } }
+    let(:content) { '<html><body>' + ('<p class="hi">x</p>' * 200) + '</body></html>' }
+
+    describe 'when the body exceeds it' do
+      let(:opts) { { css: 'p.hi', max_size: 64 } }
+
+      before { get '/' }
+
+      # Nokogiri builds a DOM several times the size of the source.
+      it 'returns the body untouched' do
+        _(last_response.body).must_equal content
+      end
+    end
+
+    describe 'when a declared `Content-Length` exceeds it' do
+      let(:headers) do
+        {
+          header_name('Content-Type')   => 'text/html',
+          header_name('Content-Length') => content.bytesize.to_s
+        }
+      end
+
+      let(:opts) { { css: 'p.hi', max_size: 64 } }
+
+      before { get '/' }
+
+      it 'declines before reading the body' do
+        _(last_response.body).must_equal content
+      end
+    end
+
+    describe 'when the body fits' do
+      let(:opts) { { css: 'p.hi', max_size: 10_000_000 } }
+
+      before { get '/' }
+
+      it 'processes it as usual' do
+        _(last_response.body).must_have_css '.greeting .hi'
+      end
+    end
+
+  end
+
+  describe 'with `parse_options`' do
+
+    let(:status)  { 200 }
+    let(:headers) { { header_name('Content-Type') => 'text/html' } }
+    let(:content) { '<html><body><p class="hi">Hi!</p></body></html>' }
+    let(:opts) do
+      { css: 'p.hi', parse_options: Nokogiri::XML::ParseOptions::NOBLANKS }
+    end
+
+    before { get '/' }
+
+    it 'hands them to the parser' do
+      _(last_response.body).must_have_css '.greeting .hi'
     end
 
   end
