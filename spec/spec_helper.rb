@@ -5,6 +5,7 @@ require 'rack/test'
 require 'nokogiri'
 require 'stringio'
 require 'zlib'
+require 'digest'
 
 begin
   require 'minitest/reporters'

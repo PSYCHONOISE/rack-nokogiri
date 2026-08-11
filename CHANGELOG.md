@@ -32,6 +32,12 @@ RubyGems is upstream's August 2013 release and contains none of the following.
   parsed as HTML and re-serialised, destroying the response.
 - Rack 3 streaming bodies — those responding to `call` rather than `each` — are
   passed through instead of being buffered.
+- An `ETag` is recomputed once the body has been rewritten. It was carried over
+  unchanged, so it named a representation that was never sent: a downstream
+  `Rack::ConditionalGet` would answer `304` to a client holding the
+  untransformed page, and caches would store the new body under the old
+  validator. Only edited responses are affected, and the original's strength is
+  kept. Configurable through `etag:`.
 
 ### Added
 
@@ -48,6 +54,11 @@ RubyGems is upstream's August 2013 release and contains none of the following.
 - `content_type:`, a String, `Regexp`, or array of either, replacing the
   hardcoded `text/html` test.
 - `parse_options:`, handed straight to Nokogiri.
+- `html5:`, parsing with `Nokogiri::HTML5` so selectors match the tree a browser
+  builds — HTML4 omits the `<tbody>` that HTML5 inserts, among much else. The
+  parser is absent on JRuby, where this raises `ArgumentError` as the middleware
+  is built rather than silently matching a different tree.
+- `etag:`, choosing between `:recompute`, `:weak`, `:delete` and `:preserve`.
 - `max_size:`, which declines bodies above a byte threshold. A declared
   `Content-Length` is checked before the body is read at all. Nokogiri builds a
   DOM several times the size of its source, so an unbounded body was an

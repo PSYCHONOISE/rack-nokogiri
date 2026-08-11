@@ -123,6 +123,8 @@ end
 | `content_type:` | `'text/html'` | String, `Regexp`, or an array of either. |
 | `parse_options:` | — | Passed straight to Nokogiri. |
 | `max_size:` | — | Skip bodies larger than this many bytes. |
+| `html5:` | `false` | Parse with `Nokogiri::HTML5` instead of HTML4. |
+| `etag:` | `:recompute` | What to do with an `ETag` once the body changes. |
 
 Selectors accept arrays, and the block is applied to everything they match
 between them:
@@ -162,6 +164,52 @@ use Rack::Nokogiri, css: 'p.target', max_size: 2 * 1024 * 1024 do |nodes|
   nodes.wrap '<div class="wrapper"></div>'
 end
 ```
+
+### Matching what the browser sees
+
+The HTML4 parser does not apply HTML5 tree construction, so the two disagree on
+real documents — HTML4 leaves out the `<tbody>` that every browser inserts:
+
+```
+HTML4: <table><tr><td>a</td></tr></table>
+HTML5: <table><tbody><tr><td>a</td></tr></tbody></table>
+```
+
+A selector written against what you see in devtools therefore misses. Pass
+`html5: true` to parse the way the browser does:
+
+```ruby
+use Rack::Nokogiri, css: 'tbody tr', html5: true do |nodes|
+  nodes.wrap '<div class="wrapper"></div>'
+end
+```
+
+`Nokogiri::HTML5` is absent on JRuby, where this raises `ArgumentError` as the
+middleware is built rather than quietly matching against a different tree. Note
+also that the HTML5 parser takes keywords, so `parse_options:` must be a Hash
+there rather than a `ParseOptions` bitmask.
+
+### Validators
+
+Rewriting the body changes the representation, and per RFC 9110 a validator
+identifies a representation — so an `ETag` copied from the original response
+would name bytes nobody receives. Left alone it makes a downstream
+`Rack::ConditionalGet` answer `304` to a client holding the *untransformed*
+page, and lets caches store the new body under the old validator.
+
+By default the `ETag` is recomputed from the bytes actually sent, keeping the
+original's strength (a `W/` prefix survives). Only responses the block actually
+edited are touched. `etag:` takes:
+
+| Value | Effect |
+| --- | --- |
+| `:recompute` | Default. Replace with a digest of the body being sent. |
+| `:weak` | Same, but always weak. |
+| `:delete` | Drop the header and let something downstream set one. |
+| `:preserve` | Leave it stale, for callers who know better. |
+
+`Last-Modified` is left alone: the transformation is deterministic, so it stays
+consistent with the resource's modification time.
 
 ### Adding Rack::Nokogiri to a Rackup application
 

@@ -479,6 +479,112 @@ describe Rack::Nokogiri do
 
   end
 
+  describe 'with an `ETag`' do
+
+    let(:status)  { 200 }
+    let(:content) { '<html><body><p class="hi">Hi!</p></body></html>' }
+
+    let(:headers) do
+      { header_name('Content-Type') => 'text/html', header_name('ETag') => '"original"' }
+    end
+
+    describe 'by default' do
+      let(:opts) { { css: 'p.hi' } }
+
+      before { get '/' }
+
+      # RFC 9110: a validator identifies a representation. Carrying the
+      # original ETag over a rewritten body makes a downstream
+      # Rack::ConditionalGet answer 304 with the wrong bytes.
+      it 'recomputes it from the body that is actually sent' do
+        expected = %{"#{Digest::SHA256.hexdigest(last_response.body)[0, 32]}"}
+        _(last_response.headers['etag']).must_equal expected
+      end
+    end
+
+    describe 'when the original is weak' do
+      let(:headers) do
+        { header_name('Content-Type') => 'text/html', header_name('ETag') => 'W/"original"' }
+      end
+
+      let(:opts) { { css: 'p.hi' } }
+
+      before { get '/' }
+
+      it 'stays weak' do
+        _(last_response.headers['etag']).must_match(/\AW\/"[0-9a-f]{32}"\z/)
+      end
+    end
+
+    describe 'when nothing was edited' do
+      let(:opts) { { css: 'p.nope' } }
+
+      before { get '/' }
+
+      it 'is left alone' do
+        _(last_response.headers['etag']).must_equal '"original"'
+      end
+    end
+
+    describe 'with `etag: :delete`' do
+      let(:opts) { { css: 'p.hi', etag: :delete } }
+
+      before { get '/' }
+
+      it 'drops the header' do
+        _(last_response.headers['etag']).must_be_nil
+      end
+    end
+
+    describe 'with `etag: :preserve`' do
+      let(:opts) { { css: 'p.hi', etag: :preserve } }
+
+      before { get '/' }
+
+      it 'keeps the stale validator, for callers who know better' do
+        _(last_response.headers['etag']).must_equal '"original"'
+      end
+    end
+
+    describe 'with an unknown mode' do
+      it 'fails when the middleware is built, not per request' do
+        _(proc { create_app(200, headers, content, css: 'p.hi', etag: :nope) { |n| n } })
+          .must_raise ArgumentError
+      end
+    end
+
+  end
+
+  describe 'with `html5: true`' do
+
+    let(:status)  { 200 }
+    let(:headers) { { header_name('Content-Type') => 'text/html' } }
+
+    # HTML5 tree construction inserts the tbody that HTML4 leaves out, so a
+    # selector written against what the browser sees only matches here.
+    let(:content) { '<html><body><table><tr><td>a</td></tr></table></body></html>' }
+    let(:opts)    { { css: 'tbody tr', html5: true } }
+
+    before do
+      skip 'Nokogiri::HTML5 is unavailable on this engine' if Rack::Nokogiri::HTML5_PARSER.nil?
+      get '/'
+    end
+
+    it 'matches against the tree a browser would build' do
+      _(last_response.body).must_have_css 'tbody .greeting'
+    end
+
+  end
+
+  describe 'with `html5: true` where the parser is missing' do
+
+    it 'fails when the middleware is built' do
+      skip 'Nokogiri::HTML5 is available here' unless Rack::Nokogiri::HTML5_PARSER.nil?
+      _(proc { create_app(200, {}, '', css: 'p', html5: true) { |n| n } }).must_raise ArgumentError
+    end
+
+  end
+
   describe 'Rack::Lint compliance' do
 
     def lint(status, headers, body, opts = { css: 'p.hi' })

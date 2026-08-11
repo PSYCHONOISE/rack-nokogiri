@@ -2,6 +2,7 @@
 
 require 'rack/nokogiri/version'
 
+require 'digest'
 require 'rack'
 require 'nokogiri'
 
@@ -38,6 +39,7 @@ module Rack
     CONTENT_LENGTH    = RACK_3_HEADERS ? 'content-length'    : 'Content-Length'
     TRANSFER_ENCODING = RACK_3_HEADERS ? 'transfer-encoding' : 'Transfer-Encoding'
     CONTENT_ENCODING  = RACK_3_HEADERS ? 'content-encoding'  : 'Content-Encoding'
+    ETAG              = RACK_3_HEADERS ? 'etag'              : 'ETag'
 
     # The case-preserving hash to hand back downstream:
     #   * `Rack::Headers`           — Rack >= 3.0
@@ -70,6 +72,15 @@ module Rack
                     ::Nokogiri::HTML
                   end
 
+    # `Nokogiri::HTML5` is the gumbo-backed parser that follows the HTML5 tree
+    # construction rules a browser actually uses -- it inserts the `<tbody>`
+    # that HTML4 does not, among much else. It is absent on JRuby, so this is
+    # nil there and `html5: true` fails loudly rather than silently matching
+    # against a different tree.
+    HTML5_PARSER = if defined?(::Nokogiri::HTML5) && ::Nokogiri::HTML5.respond_to?(:parse)
+                     ::Nokogiri::HTML5
+                   end
+
     # Nokogiri on JRuby is backed by Xerces/NekoHTML rather than libxml2.
     # It does not sniff the `<meta charset>` declaration as reliably, so we
     # give the parser an explicit fallback encoding there instead of `nil`.
@@ -80,8 +91,11 @@ module Rack
     CHARSET_PATTERN = /;\s*charset\s*=\s*"?([^";,\s]+)"?/i.freeze
 
     SUPPORTED_OPTIONS = [
-      :css, :xpath, :fragment, :rules, :content_type, :parse_options, :max_size
+      :css, :xpath, :fragment, :rules, :content_type, :parse_options, :max_size,
+      :html5, :etag
     ].freeze
+
+    ETAG_MODES = [:recompute, :weak, :preserve, :delete].freeze
 
     DEFAULT_CONTENT_TYPE = 'text/html'
 
@@ -96,6 +110,9 @@ module Rack
       @rules         = build_rules(@opts, block)
       @content_types = Array(@opts.fetch(:content_type, DEFAULT_CONTENT_TYPE))
       @max_size      = @opts[:max_size]
+      @etag_mode     = @opts.fetch(:etag, :recompute)
+
+      validate_options!
     end
 
     def call(env)
@@ -122,6 +139,7 @@ module Rack
       content = render(doc, encoding)
 
       store_header(headers, CONTENT_LENGTH, content.bytesize.to_s)
+      revalidate(headers, content)
 
       [status, headers, [content]]
     end
@@ -161,6 +179,47 @@ module Rack
 
     private
 
+    def validate_options!
+      unless ETAG_MODES.include?(@etag_mode)
+        raise ArgumentError, "etag: must be one of #{ETAG_MODES.inspect}, got #{@etag_mode.inspect}"
+      end
+
+      return unless @opts[:html5]
+
+      if HTML5_PARSER.nil?
+        raise ArgumentError, 'html5: true requires Nokogiri::HTML5, which this ' \
+                             'build of Nokogiri does not provide (it is absent on JRuby)'
+      end
+
+      options = @opts[:parse_options]
+      return if options.nil? || options.is_a?(Hash)
+
+      raise ArgumentError, 'parse_options must be a Hash when html5: true; the ' \
+                           'HTML5 parser takes keywords, not a ParseOptions bitmask'
+    end
+
+    # RFC 9110: a validator identifies a representation, so once the body has
+    # been rewritten an ETag carried over from the original names bytes nobody
+    # will ever receive. Left alone, a downstream Rack::ConditionalGet answers
+    # 304 to a client holding the untransformed page, and caches store the new
+    # body under the old validator.
+    def revalidate(headers, content)
+      return if @etag_mode == :preserve
+
+      current = fetch_header(headers, ETAG)
+      return if current.nil?
+
+      if @etag_mode == :delete
+        delete_header(headers, ETAG)
+        return
+      end
+
+      weak   = @etag_mode == :weak || current.to_s.start_with?('W/')
+      digest = ::Digest::SHA256.hexdigest(content)[0, 32]
+
+      store_header(headers, ETAG, "#{'W/' if weak}\"#{digest}\"")
+    end
+
     # The block plus `css:`/`xpath:` form one rule; `rules:` adds further
     # selector/callable pairs, so several independent edits can share a pass.
     def build_rules(opts, block)
@@ -199,6 +258,8 @@ module Rack
     # DOCTYPE, which corrupts the partials that AJAX and Turbo responses are
     # made of. Opt in with `fragment: true`.
     def parse(content, encoding)
+      return parse_html5(content, encoding) if @opts[:html5]
+
       # The positional `nil` is the document URL, so the argument list cannot be
       # compacted; the trailing options are appended only when they were given,
       # which keeps the call within reach of older Nokogiri signatures.
@@ -210,6 +271,18 @@ module Rack
       args << @opts[:parse_options] unless @opts[:parse_options].nil?
 
       @opts[:fragment] ? HTML_PARSER.fragment(*args) : HTML_PARSER.parse(*args)
+    end
+
+    # The HTML5 parser takes keywords rather than a ParseOptions bitmask.
+    def parse_html5(content, encoding)
+      options = @opts[:parse_options] || {}
+      name    = encoding.nil? ? nil : encoding.to_s
+
+      if @opts[:fragment]
+        HTML5_PARSER.fragment(content, name, **options)
+      else
+        HTML5_PARSER.parse(content, nil, name, **options)
+      end
     end
 
     # A HEAD response carries the headers of its GET counterpart but no body.
@@ -239,6 +312,14 @@ module Rack
 
       _key, found = headers.find { |key, _| key.to_s.casecmp(name).zero? }
       found
+    end
+
+    def delete_header(headers, name)
+      if HEADERS_CLASS && headers.is_a?(HEADERS_CLASS)
+        headers.delete(name)
+      else
+        headers.delete_if { |key, _| key.to_s.casecmp(name).zero? }
+      end
     end
 
     def store_header(headers, name, value)
