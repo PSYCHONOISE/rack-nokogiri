@@ -3,6 +3,8 @@
 require 'minitest/autorun'
 require 'rack/test'
 require 'nokogiri'
+require 'stringio'
+require 'zlib'
 
 begin
   require 'minitest/reporters'

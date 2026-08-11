@@ -37,6 +37,7 @@ module Rack
     CONTENT_TYPE      = RACK_3_HEADERS ? 'content-type'      : 'Content-Type'
     CONTENT_LENGTH    = RACK_3_HEADERS ? 'content-length'    : 'Content-Length'
     TRANSFER_ENCODING = RACK_3_HEADERS ? 'transfer-encoding' : 'Transfer-Encoding'
+    CONTENT_ENCODING  = RACK_3_HEADERS ? 'content-encoding'  : 'Content-Encoding'
 
     # The case-preserving hash to hand back downstream:
     #   * `Rack::Headers`           — Rack >= 3.0
@@ -78,7 +79,7 @@ module Rack
 
     CHARSET_PATTERN = /;\s*charset\s*=\s*"?([^";,\s]+)"?/i.freeze
 
-    SUPPORTED_OPTIONS = [:css, :xpath].freeze
+    SUPPORTED_OPTIONS = [:css, :xpath, :fragment].freeze
 
     def initialize(app, opts = {}, &block)
       @app   = app
@@ -90,13 +91,18 @@ module Rack
       status, headers, body = @app.call(env)
       headers = wrap_headers(headers)
 
-      return [status, headers, body] unless should_process?(status, headers, body)
+      return [status, headers, body] unless should_process?(status, headers, body, env)
 
       encoding = charset_for(headers)
-      content  = read_body(body, encoding)
+      original = read_body(body, encoding)
 
-      doc = HTML_PARSER.parse(content, nil, parser_encoding(encoding))
-      process_nodes(doc)
+      doc = parse(original, encoding)
+
+      # Re-serialising is neither free nor lossless: Nokogiri normalises the
+      # markup it round-trips, injecting a DOCTYPE among other things. When the
+      # selector matched nothing the block never ran and there is no edit to
+      # preserve, so hand back the bytes exactly as they arrived.
+      return [status, headers, [original]] unless process_nodes(doc)
 
       content = render(doc, encoding)
 
@@ -105,11 +111,13 @@ module Rack
       [status, headers, [content]]
     end
 
-    def should_process?(status, headers, body = nil)
+    def should_process?(status, headers, body = nil, env = nil)
       return false if @block.nil?
       return false if NO_ENTITY_BODY_STATUSES.key?(status.to_i)
+      return false if head_request?(env)
       return false if streaming_body?(body)
       return false if fetch_header(headers, TRANSFER_ENCODING)
+      return false if encoded_body?(headers)
 
       content_type = fetch_header(headers, CONTENT_TYPE)
       !content_type.nil? && content_type.include?('text/html')
@@ -121,14 +129,43 @@ module Rack
       read_body(body, nil)
     end
 
+    # Returns whether the block was called, which is what tells `call` if the
+    # document is worth re-serialising.
     def process_nodes(doc)
-      nodes = ::Nokogiri::XML::NodeSet.new(doc)
+      nodes = ::Nokogiri::XML::NodeSet.new(doc.document)
       nodes += doc.css(@opts[:css])     unless @opts[:css].nil?
       nodes += doc.xpath(@opts[:xpath]) unless @opts[:xpath].nil?
-      @block.call(nodes) unless nodes.empty?
+      return false if nodes.empty?
+
+      @block.call(nodes)
+      true
     end
 
     private
+
+    # Parsing a bare fragment as a document wraps it in `<html><body>` and a
+    # DOCTYPE, which corrupts the partials that AJAX and Turbo responses are
+    # made of. Opt in with `fragment: true`.
+    def parse(content, encoding)
+      if @opts[:fragment]
+        HTML_PARSER.fragment(content, parser_encoding(encoding))
+      else
+        HTML_PARSER.parse(content, nil, parser_encoding(encoding))
+      end
+    end
+
+    # A HEAD response carries the headers of its GET counterpart but no body.
+    # Parsing that empty body and serialising the result back would invent one.
+    def head_request?(env)
+      env.respond_to?(:[]) && env['REQUEST_METHOD'] == 'HEAD'
+    end
+
+    # A gzipped body is not HTML. Parsing it yields garbage and re-serialising
+    # destroys the response, so leave encoded bodies to whoever decodes them.
+    def encoded_body?(headers)
+      encoding = fetch_header(headers, CONTENT_ENCODING).to_s.strip
+      !encoding.empty? && !encoding.casecmp('identity').zero?
+    end
 
     def wrap_headers(headers)
       headers ||= {}
@@ -196,8 +233,14 @@ module Rack
       JRUBY ? DEFAULT_ENCODING : nil
     end
 
+    # `Nokogiri::XML::DocumentFragment` has no `#encoding` of its own; the
+    # declaration lives on the document that owns it.
+    def document_encoding(doc)
+      doc.respond_to?(:encoding) ? doc.encoding : doc.document.encoding
+    end
+
     def render(doc, encoding)
-      name = (encoding || doc.encoding || DEFAULT_ENCODING).to_s
+      name = (encoding || document_encoding(doc) || DEFAULT_ENCODING).to_s
       html = doc.to_html(encoding: name)
 
       # The Java backend ignores the `:encoding` option in some versions and

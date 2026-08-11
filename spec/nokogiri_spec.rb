@@ -238,6 +238,146 @@ describe Rack::Nokogiri do
 
   end
 
+  describe 'when the selector matches nothing' do
+
+    let(:content) { '<html><body><p class="hi">Hi!</p></body></html>' }
+
+    let(:app) do
+      inner = lambda do |_env|
+        [200,
+         { header_name('Content-Type')   => 'text/html',
+           header_name('Content-Length') => content.bytesize.to_s },
+         [content]]
+      end
+      Rack::Nokogiri.new(inner, css: 'p.nope') { |nodes| nodes.wrap('<div></div>') }
+    end
+
+    before { get '/' }
+
+    # Round-tripping through Nokogiri normalises the markup, so a response the
+    # block never touched must not be re-serialised at all.
+    it 'returns the body byte for byte' do
+      _(last_response.body).must_equal content
+    end
+
+    it 'does not inject a doctype' do
+      _(last_response.body).wont_match(/DOCTYPE/i)
+    end
+
+    it 'leaves the `Content-Length` alone' do
+      _(last_response.headers['content-length']).must_equal content.bytesize.to_s
+    end
+
+  end
+
+  describe 'with `fragment: true`' do
+
+    let(:app) do
+      inner = lambda do |_env|
+        [200, { header_name('Content-Type') => 'text/html' }, ['<p class="hi">Hi!</p>']]
+      end
+      Rack::Nokogiri.new(inner, css: 'p.hi', fragment: true) do |nodes|
+        nodes.wrap('<div class="greeting"></div>')
+      end
+    end
+
+    before { get '/' }
+
+    it 'edits the fragment without wrapping it in a document' do
+      _(last_response.body).must_equal '<div class="greeting"><p class="hi">Hi!</p></div>'
+    end
+
+    it 'does not inject a doctype' do
+      _(last_response.body).wont_match(/DOCTYPE/i)
+    end
+
+  end
+
+  describe 'with a HEAD request' do
+
+    let(:app) do
+      inner = lambda do |_env|
+        [200, { header_name('Content-Type') => 'text/html' }, []]
+      end
+      Rack::Nokogiri.new(inner, css: 'p.hi') { |nodes| nodes.wrap('<div></div>') }
+    end
+
+    # A HEAD response carries its GET counterpart's headers but no body;
+    # serialising a parsed empty document would invent one.
+    it 'does not invent a body' do
+      head '/'
+      _(last_response.body).must_equal ''
+      # Rack 3's test harness stamps a `0` here; either way it must not be the
+      # length of a serialised empty document.
+      _(['0', nil]).must_include last_response.headers['content-length']
+    end
+
+  end
+
+  describe 'with a `Content-Encoding` header' do
+
+    let(:compressed) do
+      buffer = StringIO.new
+      gzip   = Zlib::GzipWriter.new(buffer)
+      gzip.write('<html><body><p class="hi">Hi!</p></body></html>')
+      gzip.close
+      buffer.string
+    end
+
+    let(:app) do
+      payload = compressed
+      inner = lambda do |_env|
+        [200,
+         { header_name('Content-Type')     => 'text/html',
+           header_name('Content-Encoding') => 'gzip' },
+         [payload]]
+      end
+      Rack::Nokogiri.new(inner, css: 'p.hi') { |nodes| nodes.wrap('<div></div>') }
+    end
+
+    before { get '/' }
+
+    # A gzipped body is not HTML; parsing it yields garbage and re-serialising
+    # destroys the response.
+    it 'leaves the compressed body intact' do
+      round_tripped = Zlib::GzipReader.new(StringIO.new(last_response.body.b)).read
+      _(round_tripped).must_include '<p class="hi">Hi!</p>'
+    end
+
+  end
+
+  describe 'Rack::Lint compliance' do
+
+    def lint(status, headers, body, opts = { css: 'p.hi' })
+      inner = lambda { |_env| [status, headers, body] }
+      middleware = Rack::Nokogiri.new(inner, opts) { |nodes| nodes.wrap('<div></div>') }
+      Rack::Lint.new(middleware)
+    end
+
+    let(:html) { '<html><body><p class="hi">Hi!</p></body></html>' }
+
+    let(:headers) do
+      { header_name('Content-Type') => 'text/html' }
+    end
+
+    it 'emits a valid response when it rewrites the body' do
+      response = Rack::MockRequest.new(lint(200, headers, [html])).get('/')
+      _(response.status).must_equal 200
+      _(response.body).must_have_css '.greeting, div p.hi'
+    end
+
+    it 'emits a valid response when it passes the body through' do
+      response = Rack::MockRequest.new(lint(200, headers, [html], css: 'p.nope')).get('/')
+      _(response.body).must_equal html
+    end
+
+    it 'emits a valid response to a HEAD request' do
+      response = Rack::MockRequest.new(lint(200, headers, [])).head('/')
+      _(response.body).must_equal ''
+    end
+
+  end
+
   describe 'with a streaming body' do
 
     let(:app) do
