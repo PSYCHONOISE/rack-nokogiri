@@ -3,10 +3,6 @@
     "deny": [
       "Edit(+/*)",
       "Edit(AI.md)",
-      "Read(.env)",
-      "Read(.env.*)",
-      "Read(.secrets)",
-      "Edit(ruff.toml)"
     ]
   }
 }
