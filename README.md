@@ -28,6 +28,9 @@ What this fork changes, and nothing more:
   See [Compatibility](#compatibility).
 * Byte-accurate `Content-Length`, charset-aware body handling, the body closed when
   replaced, and Rack 3 streaming bodies passed through untouched.
+* Responses the block never touched are returned byte for byte, and `HEAD`,
+  compressed and fragment responses are no longer corrupted. See the
+  [CHANGELOG](CHANGELOG.md) for the full list.
 * The test suite runs on current Minitest; CI covers every supported Ruby x Rack pair.
 
 The public API is unchanged — `should_process?`, `extract_content` and `process_nodes` all
@@ -97,6 +100,18 @@ get('/') do
 end
 ```
 
+### Editing an HTML fragment
+
+Parsing a bare partial as a whole document wraps it in `<html><body>` and a
+`DOCTYPE`, which corrupts the responses AJAX and Turbo are made of. Pass
+`fragment: true` to parse it as a fragment instead:
+
+```ruby
+use Rack::Nokogiri, css: 'p.target', fragment: true do |nodes|
+  nodes.wrap '<div class="wrapper"></div>'
+end
+```
+
 ### Adding Rack::Nokogiri to a Rackup application
 
 For a Rackup app we would do:
@@ -127,6 +142,22 @@ running against, and adapts:
 | `NO_ENTITY_BODY_STATUSES` | lookup hash | `STATUS_WITH_NO_ENTITY_BODY` is a `Set` in Rack 1.x and a `Hash` from Rack 2. |
 | `HTML_PARSER` | `Nokogiri::HTML4` or `Nokogiri::HTML` | Nokogiri 1.12 split the HTML4 parser out of the `HTML` shortcut. |
 | `JRUBY` | explicit vs sniffed parser encoding | Nokogiri on JRuby is backed by Xerces/NekoHTML, which does not sniff `<meta charset>` as reliably as libxml2. |
+
+### When the middleware stays out of the way
+
+A response is passed through untouched, rather than parsed and re-serialised,
+when any of the following holds. This matters because round-tripping through
+Nokogiri normalises the markup, so processing a response is never free of
+side effects:
+
+* the selector matched nothing, so the block never ran;
+* the request was a `HEAD`, whose response carries headers but no body;
+* the response carries a `Content-Encoding` — a gzipped body is not HTML;
+* the response carries a `Transfer-Encoding`;
+* the status admits no entity body;
+* the body is a Rack 3 streaming body, which buffering would defeat;
+* the `Content-Type` is not `text/html`;
+* no block was given.
 
 Beyond that, responses are handled per the Rack version in play:
 
